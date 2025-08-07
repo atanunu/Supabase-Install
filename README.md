@@ -1,13 +1,33 @@
-# Supabase Self-Hosting Automation
+# 🚀 Enterprise Supabase Deployment Suite
 
-This project provides automated scripts for installing, updating, and backing up a self-hosted Supabase instance using Docker.
+[![Production Ready](https://img.shields.io/badge/Production-Ready-brightgreen.svg)](https://github.com/atanunu/Supabase-Install)
+[![Security Grade](https://img.shields.io/badge/Security-A+-blue.svg)](https://github.com/atanunu/Supabase-Install)
+[![Deployment Time](https://img.shields.io/badge/Deploy%20Time-5%20minutes-orange.svg)](https://github.com/atanunu/Supabase-Install)
+[![Web Interface](https://img.shields.io/badge/Web%20Interface-Included-purple.svg)](https://github.com/atanunu/Supabase-Install)
 
-## 🚀 Quick Start
+Complete enterprise-grade Supabase deployment solution with professional web management interface, automated security hardening, and production-ready monitoring stack.
 
-1. **Initial Setup**
-   ```bash
-   chmod +x *.sh
-   ./install_supabase.sh
+## 🎯 **Quick Start (5 Minutes to Production)**
+
+### **Option 1: One-Command Web Interface Deployment**
+```bash
+# Clone and deploy web interface
+git clone https://github.com/atanunu/Supabase-Install.git
+cd Supabase-Install
+chmod +x quick_web_deploy.sh
+sudo ./quick_web_deploy.sh
+
+# Access at: http://YOUR-SERVER-IP
+```
+
+### **Option 2: Full Enterprise Deployment**
+```bash
+# Deploy complete enterprise system
+chmod +x deploy_operations.sh
+./deploy_operations.sh deploy
+
+# Access web interface: https://your-domain.com
+```
    ```
 
 2. **Configure Environment**
