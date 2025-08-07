@@ -1,0 +1,297 @@
+version: '3.8'
+
+# Docker Compose override file for custom Supabase configurations
+# This file extends the default docker-compose.yml from Supabase
+# Place this in the same directory as docker-compose.yml
+
+services:
+  # Database customizations
+  db:
+    environment:
+      # Enhanced PostgreSQL settings for production
+      - POSTGRES_SHARED_PRELOAD_LIBRARIES=pg_stat_statements,pg_cron
+      - POSTGRES_MAX_CONNECTIONS=200
+      - POSTGRES_SHARED_BUFFERS=256MB
+      - POSTGRES_EFFECTIVE_CACHE_SIZE=1GB
+      - POSTGRES_WORK_MEM=4MB
+      # Security settings
+      - POSTGRES_SSL=on
+      - POSTGRES_LOG_STATEMENT=ddl
+      - POSTGRES_LOG_MIN_DURATION_STATEMENT=1000
+      # Backup settings
+      - POSTGRES_WAL_LEVEL=replica
+      - POSTGRES_ARCHIVE_MODE=on
+      - POSTGRES_ARCHIVE_COMMAND='test ! -f /var/lib/postgresql/wal_archive/%f && cp %p /var/lib/postgresql/wal_archive/%f'
+    volumes:
+      # Persistent data directory
+      - postgres_data:/var/lib/postgresql/data
+      # Custom initialization scripts
+      - ./init-scripts:/docker-entrypoint-initdb.d
+      # WAL archive directory
+      - postgres_wal:/var/lib/postgresql/wal_archive
+      # SSL certificates
+      - ./ssl/postgresql:/var/lib/postgresql/ssl:ro
+    # Resource limits for production
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.5'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    # Health check
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U postgres" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  # API Gateway customizations
+  kong:
+    environment:
+      # Production security settings
+      - KONG_LOG_LEVEL=info
+      - KONG_PLUGINS=request-id,cors,basic-auth,rate-limiting,ip-restriction,bot-detection
+      # Security headers
+      - KONG_HEADERS=server_tokens=off
+      # Rate limiting
+      - KONG_RATE_LIMITING_POLICY=redis
+      - KONG_RATE_LIMITING_REDIS_HOST=redis
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    # Health check
+    healthcheck:
+      test: [ "CMD", "kong", "health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Redis for rate limiting and caching
+  redis:
+    image: redis:7-alpine
+    container_name: supabase-redis
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-supabase123}
+    volumes:
+      - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.25'
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  # Auth service customizations
+  auth:
+    environment:
+      # Enhanced auth settings
+      - GOTRUE_JWT_DEFAULT_GROUP_NAME=authenticated
+      - GOTRUE_JWT_AUD=authenticated
+      - GOTRUE_SECURITY_REFRESH_TOKEN_ROTATION_ENABLED=true
+      - GOTRUE_SECURITY_UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION=true
+      # Enhanced security
+      - GOTRUE_PASSWORD_MIN_LENGTH=12
+      - GOTRUE_SECURITY_CAPTCHA_ENABLED=true
+      - GOTRUE_RATE_LIMIT_EMAIL_SENT=60
+      - GOTRUE_RATE_LIMIT_SMS_SENT=60
+      - GOTRUE_RATE_LIMIT_VERIFY=120
+      # Session security
+      - GOTRUE_SESSIONS_TIMEBOX=86400
+      - GOTRUE_SESSIONS_SINGLE_PER_USER=false
+    # Health check
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # REST API customizations
+  rest:
+    environment:
+      # Performance settings
+      - PGRST_DB_POOL=20
+      - PGRST_DB_POOL_TIMEOUT=10
+      - PGRST_MAX_ROWS=1000
+    # Health check
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Realtime customizations
+  realtime:
+    environment:
+      # Realtime settings
+      - DB_POOL_SIZE=20
+      - SECRET_KEY_BASE=${JWT_SECRET}
+    # Health check
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4000/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Storage customizations
+  storage:
+    environment:
+      # Storage settings
+      - STORAGE_BACKEND=file
+      - FILE_SIZE_LIMIT=52428800 # 50MB
+      - FILE_STORAGE_BACKEND_PATH=/var/lib/storage
+    volumes:
+      - storage_data:/var/lib/storage
+    # Health check
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/status" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Meta (Admin API) customizations
+  meta:
+    # Health check
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Studio (Dashboard) customizations
+  studio:
+    environment:
+      # Studio settings
+      - STUDIO_PG_META_URL=http://meta:8080
+      - NEXT_PUBLIC_ENABLE_LOGS=true
+    # Health check
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Nginx reverse proxy with SSL termination
+  nginx:
+    image: nginx:alpine
+    container_name: supabase-nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./ssl/nginx:/etc/nginx/ssl:ro
+      - ./nginx/logs:/var/log/nginx
+    depends_on:
+      - kong
+      - studio
+    deploy:
+      resources:
+        limits:
+          memory: 128M
+          cpus: '0.25'
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    profiles:
+      - production
+
+  # Log aggregation with Loki
+  loki:
+    image: grafana/loki:latest
+    container_name: supabase-loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./monitoring/loki:/etc/loki
+      - loki_data:/loki
+    ports:
+      - "3100:3100"
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+    profiles:
+      - monitoring
+
+  # Log shipping with Promtail
+  promtail:
+    image: grafana/promtail:latest
+    container_name: supabase-promtail
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./monitoring/promtail:/etc/promtail
+      - /var/log:/var/log:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    profiles:
+      - monitoring
+
+  # Monitoring with Prometheus (optional)
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: supabase-prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    profiles:
+      - monitoring
+
+  # Grafana for monitoring (optional)
+  grafana:
+    image: grafana/grafana:latest
+    container_name: supabase-grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+    ports:
+      - "3001:3000"
+    profiles:
+      - monitoring
+
+volumes:
+  postgres_data:
+    driver: local
+  postgres_wal:
+    driver: local
+  storage_data:
+    driver: local
+  redis_data:
+    driver: local
+  prometheus_data:
+    driver: local
+  loki_data:
+    driver: local
+  grafana_data:
+    driver: local
+
+networks:
+  default:
+    name: supabase_network
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

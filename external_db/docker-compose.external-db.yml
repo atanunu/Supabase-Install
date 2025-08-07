@@ -1,0 +1,102 @@
+# Docker Compose configuration for external PostgreSQL
+# Use this instead of the local db service when using external PostgreSQL
+
+version: '3.8'
+
+services:
+  # Remove local database service when using external
+  db:
+    profiles:
+      - disabled
+
+  # Connection pooler for external database
+  pgbouncer:
+    image: pgbouncer/pgbouncer:latest
+    container_name: supabase-pgbouncer
+    environment:
+      - DATABASES_HOST=${EXTERNAL_DB_HOST}
+      - DATABASES_PORT=${EXTERNAL_DB_PORT}
+      - DATABASES_USER=${EXTERNAL_DB_USER}
+      - DATABASES_PASSWORD=${EXTERNAL_DB_PASSWORD}
+      - DATABASES_DBNAME=${EXTERNAL_DB_NAME}
+      - POOL_MODE=transaction
+      - MAX_CLIENT_CONN=1000
+      - DEFAULT_POOL_SIZE=${EXTERNAL_DB_POOL_SIZE:-20}
+      - MAX_DB_CONNECTIONS=${EXTERNAL_DB_MAX_CONNECTIONS:-100}
+      - RESERVE_POOL_TIMEOUT=${EXTERNAL_DB_POOL_TIMEOUT:-30}
+      - STATS_USERS=stats,supabase_admin
+      - ADMIN_USERS=supabase_admin
+      - AUTH_TYPE=md5
+    volumes:
+      - ./external_db/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./external_db/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    ports:
+      - "6432:5432"
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '0.5'
+    healthcheck:
+      test: [ "CMD", "psql", "-h", "localhost", "-p", "5432", "-U", "pgbouncer", "-d", "pgbouncer", "-c", "SHOW STATS" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    profiles:
+      - external-db
+
+  # Update services to use pgbouncer for external DB
+  auth:
+    environment:
+      - DB_HOST=pgbouncer
+      - DB_PORT=5432
+    depends_on:
+      - pgbouncer
+    profiles:
+      - external-db
+
+  rest:
+    environment:
+      - PGRST_DB_URI=postgresql://${EXTERNAL_DB_USER}:${EXTERNAL_DB_PASSWORD}@pgbouncer:5432/${EXTERNAL_DB_NAME}
+      - PGRST_DB_POOL=${EXTERNAL_DB_POOL_SIZE:-20}
+      - PGRST_DB_POOL_TIMEOUT=${EXTERNAL_DB_POOL_TIMEOUT:-30}
+    depends_on:
+      - pgbouncer
+    profiles:
+      - external-db
+
+  realtime:
+    environment:
+      - DATABASE_URL=postgresql://${EXTERNAL_DB_USER}:${EXTERNAL_DB_PASSWORD}@pgbouncer:5432/${EXTERNAL_DB_NAME}
+      - DB_HOST=pgbouncer
+      - DB_PORT=5432
+    depends_on:
+      - pgbouncer
+    profiles:
+      - external-db
+
+  storage:
+    environment:
+      - DATABASE_URL=postgresql://${EXTERNAL_DB_USER}:${EXTERNAL_DB_PASSWORD}@pgbouncer:5432/${EXTERNAL_DB_NAME}
+    depends_on:
+      - pgbouncer
+    profiles:
+      - external-db
+
+  meta:
+    environment:
+      - PG_META_DB_URL=postgresql://${EXTERNAL_DB_USER}:${EXTERNAL_DB_PASSWORD}@pgbouncer:5432/${EXTERNAL_DB_NAME}
+    depends_on:
+      - pgbouncer
+    profiles:
+      - external-db
+
+volumes:
+  # Disable local postgres volumes when using external DB
+  postgres_data:
+    external: true
+    name: disabled_volume
+  postgres_wal:
+    external: true
+    name: disabled_volume

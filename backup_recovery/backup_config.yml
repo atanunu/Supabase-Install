@@ -1,0 +1,161 @@
+# Comprehensive Backup Configuration for Supabase
+version: '3.8'
+
+services:
+  # PostgreSQL Backup Service with PITR
+  postgres_backup:
+    image: postgres:15-alpine
+    container_name: supabase_postgres_backup
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-supabase}
+      - POSTGRES_USER=${POSTGRES_USER:-supabase}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - PGPASSWORD=${POSTGRES_PASSWORD}
+      - BACKUP_SCHEDULE=${BACKUP_SCHEDULE:-0 2 * * *}
+      - BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-30}
+      - PITR_ENABLED=${PITR_ENABLED:-true}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - CROSS_REGION_BACKUP=${CROSS_REGION_BACKUP:-true}
+      - CROSS_REGION_BUCKET=${CROSS_REGION_BUCKET}
+      - CROSS_REGION=${CROSS_REGION:-us-west-2}
+    volumes:
+      - ./scripts:/backup_scripts:ro
+      - ./configs:/backup_configs:ro
+      - postgres_backups:/backups
+      - postgres_wal_archive:/wal_archive
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - supabase_network
+    depends_on:
+      - postgres_primary
+    command: >
+      sh -c "
+        apk add --no-cache aws-cli docker-cli curl &&
+        /backup_scripts/backup_manager.sh
+      "
+    restart: unless-stopped
+    labels:
+      - "backup.type=postgres"
+      - "backup.schedule=daily"
+      - "backup.retention=30d"
+
+  # WAL-E for Point-in-Time Recovery
+  wal_e_backup:
+    image: postgres:15-alpine
+    container_name: supabase_wal_backup
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-supabase}
+      - POSTGRES_USER=${POSTGRES_USER:-supabase}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - WALE_S3_PREFIX=s3://${AWS_S3_BUCKET}/wal-e
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+    volumes:
+      - ./scripts:/wal_scripts:ro
+      - postgres_wal_archive:/wal_archive
+      - postgres_data:/var/lib/postgresql/data:ro
+    networks:
+      - supabase_network
+    command: >
+      sh -c "
+        apk add --no-cache python3 py3-pip aws-cli &&
+        pip3 install wal-e[aws] &&
+        /wal_scripts/wal_manager.sh
+      "
+    restart: unless-stopped
+
+  # Storage/File Backup Service
+  storage_backup:
+    image: alpine:latest
+    container_name: supabase_storage_backup
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - AWS_REGION=${AWS_REGION:-us-east-1}
+      - STORAGE_BACKUP_SCHEDULE=${STORAGE_BACKUP_SCHEDULE:-0 3 * * *}
+      - STORAGE_RETENTION_DAYS=${STORAGE_RETENTION_DAYS:-90}
+    volumes:
+      - ./scripts:/backup_scripts:ro
+      - storage_data:/storage_data:ro
+      - storage_backups:/storage_backups
+    networks:
+      - supabase_network
+    command: >
+      sh -c "
+        apk add --no-cache aws-cli rsync &&
+        /backup_scripts/storage_backup.sh
+      "
+    restart: unless-stopped
+
+  # Backup Validation Service
+  backup_validator:
+    image: postgres:15-alpine
+    container_name: supabase_backup_validator
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-supabase}
+      - POSTGRES_USER=${POSTGRES_USER:-supabase}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - VALIDATION_SCHEDULE=${VALIDATION_SCHEDULE:-0 4 * * 1}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - AWS_S3_BUCKET=${AWS_S3_BUCKET}
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL}
+      - EMAIL_ALERTS=${EMAIL_ALERTS:-admin@yourdomain.com}
+    volumes:
+      - ./scripts:/validation_scripts:ro
+      - validation_temp:/validation_temp
+      - postgres_backups:/backups:ro
+    networks:
+      - supabase_network
+    command: >
+      sh -c "
+        apk add --no-cache aws-cli curl &&
+        /validation_scripts/backup_validator.sh
+      "
+    restart: unless-stopped
+
+  # Cross-Region Sync Service
+  cross_region_sync:
+    image: alpine:latest
+    container_name: supabase_cross_region_sync
+    environment:
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+      - PRIMARY_BUCKET=${AWS_S3_BUCKET}
+      - PRIMARY_REGION=${AWS_REGION:-us-east-1}
+      - CROSS_REGION_BUCKET=${CROSS_REGION_BUCKET}
+      - CROSS_REGION=${CROSS_REGION:-us-west-2}
+      - SYNC_SCHEDULE=${SYNC_SCHEDULE:-0 5 * * *}
+    volumes:
+      - ./scripts:/sync_scripts:ro
+    networks:
+      - supabase_network
+    command: >
+      sh -c "
+        apk add --no-cache aws-cli &&
+        /sync_scripts/cross_region_sync.sh
+      "
+    restart: unless-stopped
+
+volumes:
+  postgres_backups:
+    driver: local
+  postgres_wal_archive:
+    driver: local
+  storage_backups:
+    driver: local
+  validation_temp:
+    driver: local
+  postgres_data:
+    external: true
+  storage_data:
+    external: true
+
+networks:
+  supabase_network:
+    external: true

@@ -1,0 +1,63 @@
+# Supabase Enterprise Installation Files
+*.log
+*.tmp
+.env*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# Node modules and dependencies
+node_modules/
+npm-debug.log*
+
+# Docker volumes and data
+docker-data/
+postgres-data/
+prometheus-data/
+grafana-data/
+
+# Backup files
+*.backup
+*.dump
+backups/
+
+# SSL certificates (keep private)
+*.key
+*.crt
+*.pem
+*.p12
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Windows specific
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+
+# Secrets and sensitive data
+secrets/
+private/
+.secrets
+
+# User specific files (avoid committing personal paths)
+../../*

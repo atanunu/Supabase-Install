@@ -1,0 +1,474 @@
+# CI/CD Pipeline Configuration for Supabase
+# GitHub Actions workflow for automated deployment
+
+name: 🚀 Supabase Enterprise Deployment
+
+on:
+  push:
+    branches: [main, production]
+    paths:
+      - 'docker-compose*.yml'
+      - 'configs/**'
+      - 'scripts/**'
+      - '.github/workflows/**'
+  pull_request:
+    branches: [main, production]
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Deployment environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+        - staging
+        - production
+      force_deploy:
+        description: 'Force deployment (skip tests)'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/supabase
+
+jobs:
+  # 🧪 Testing Stage
+  test:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-24.04
+    if: ${{ !inputs.force_deploy }}
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🐳 Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: 🔧 Create test environment
+      run: |
+        cp .env.example .env
+        echo "POSTGRES_PASSWORD=test_password_$(openssl rand -hex 16)" >> .env
+        echo "JWT_SECRET=$(openssl rand -base64 32)" >> .env
+        echo "ANON_KEY=test_anon_key" >> .env
+        echo "SERVICE_ROLE_KEY=test_service_key" >> .env
+        
+    - name: 🚀 Start test services
+      run: |
+        docker compose --profile test up -d
+        sleep 30
+        
+    - name: 🏥 Health check
+      run: |
+        timeout 60 bash -c 'until curl -f http://localhost:8000/health; do sleep 2; done'
+        
+    - name: 🧪 Run integration tests
+      run: |
+        # Test database connectivity
+        docker exec supabase_db_supabase pg_isready -U supabase
+        
+        # Test API endpoints
+        curl -f http://localhost:8000/rest/v1/ \
+          -H "Authorization: Bearer test_anon_key"
+          
+        # Test authentication
+        curl -f http://localhost:8000/auth/v1/health
+        
+        # Test storage
+        curl -f http://localhost:8000/storage/v1/buckets
+        
+    - name: 🔒 Security scan
+      run: |
+        # Install security scanner
+        docker run --rm -v $(pwd):/workspace \
+          securecodewarrior/docker-security-scan:latest
+          
+    - name: 📊 Performance test
+      run: |
+        # Basic load test
+        docker run --rm --network host \
+          grafana/k6:latest run - <<'EOF'
+        import http from 'k6/http';
+        export let options = {
+          vus: 10,
+          duration: '30s',
+        };
+        export default function() {
+          http.get('http://localhost:8000/health');
+        }
+        EOF
+        
+    - name: 🧹 Cleanup test environment
+      if: always()
+      run: |
+        docker compose down -v
+        docker system prune -f
+
+  # 🏗️ Build Stage
+  build:
+    name: 🏗️ Build Images
+    runs-on: ubuntu-24.04
+    needs: test
+    if: always() && (needs.test.result == 'success' || inputs.force_deploy)
+    
+    outputs:
+      image: ${{ steps.image.outputs.image }}
+      digest: ${{ steps.build.outputs.digest }}
+      
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🐳 Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    - name: 🔑 Login to Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: 📝 Extract metadata
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=ref,event=pr
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          
+    - name: 🏗️ Build and push image
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        
+    - name: 📋 Output image info
+      id: image
+      run: echo "image=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.meta.outputs.version }}" >> $GITHUB_OUTPUT
+
+  # 🚀 Staging Deployment
+  deploy-staging:
+    name: 🚀 Deploy to Staging
+    runs-on: ubuntu-24.04
+    needs: build
+    if: github.ref == 'refs/heads/main' || inputs.environment == 'staging'
+    environment: staging
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🔧 Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        aws-region: ${{ secrets.AWS_REGION }}
+        
+    - name: 🚀 Deploy to staging server
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.STAGING_HOST }}
+        username: ${{ secrets.STAGING_USER }}
+        key: ${{ secrets.STAGING_SSH_KEY }}
+        script: |
+          # Navigate to deployment directory
+          cd /opt/supabase
+          
+          # Create backup before deployment
+          ./deploy_backup_recovery.sh
+          
+          # Pull latest changes
+          git pull origin main
+          
+          # Update environment variables
+          cp .env.staging .env
+          
+          # Deploy with blue-green strategy
+          ./deploy.sh staging ${{ needs.build.outputs.image }}
+          
+          # Run health checks
+          ./health_check.sh --full
+          
+          # Run smoke tests
+          ./smoke_tests.sh
+          
+    - name: 📊 Update deployment metrics
+      run: |
+        # Send deployment notification to Slack
+        curl -X POST -H 'Content-type: application/json' \
+          --data '{"text":"🚀 Staging deployment completed successfully\nImage: ${{ needs.build.outputs.image }}\nCommit: ${{ github.sha }}"}' \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  # 🌍 Production Deployment
+  deploy-production:
+    name: 🌍 Deploy to Production
+    runs-on: ubuntu-24.04
+    needs: [build, deploy-staging]
+    if: github.ref == 'refs/heads/production' || inputs.environment == 'production'
+    environment: production
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: ⏸️ Maintenance mode
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.PRODUCTION_HOST }}
+        username: ${{ secrets.PRODUCTION_USER }}
+        key: ${{ secrets.PRODUCTION_SSH_KEY }}
+        script: |
+          # Enable maintenance mode
+          echo "🚧 Enabling maintenance mode..."
+          ./maintenance_mode.sh enable
+          
+    - name: 📦 Create production backup
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.PRODUCTION_HOST }}
+        username: ${{ secrets.PRODUCTION_USER }}
+        key: ${{ secrets.PRODUCTION_SSH_KEY }}
+        script: |
+          # Create pre-deployment backup
+          echo "💾 Creating production backup..."
+          supabase-backup full
+          supabase-wal restore-point "pre_deployment_$(date +%Y%m%d_%H%M%S)"
+          
+    - name: 🚀 Deploy to production
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.PRODUCTION_HOST }}
+        username: ${{ secrets.PRODUCTION_USER }}
+        key: ${{ secrets.PRODUCTION_SSH_KEY }}
+        script: |
+          # Navigate to deployment directory
+          cd /opt/supabase
+          
+          # Pull latest changes
+          git pull origin production
+          
+          # Update environment variables
+          cp .env.production .env
+          
+          # Deploy with zero-downtime strategy
+          ./deploy.sh production ${{ needs.build.outputs.image }}
+          
+    - name: 🏥 Production health check
+      uses: appleboy/ssh-action@v1.0.0
+      with:
+        host: ${{ secrets.PRODUCTION_HOST }}
+        username: ${{ secrets.PRODUCTION_USER }}
+        key: ${{ secrets.PRODUCTION_SSH_KEY }}
+        script: |
+          # Wait for services to be ready
+          sleep 30
+          
+          # Run comprehensive health checks
+          ./health_check.sh --full --production
+          
+          # Verify database integrity
+          ./verify_deployment.sh
+          
+          # Run production smoke tests
+          ./smoke_tests.sh --production
+          
+    - name: ✅ Disable maintenance mode
+      uses: appleboy/ssh-action@v1.0.0
+      if: success()
+      with:
+        host: ${{ secrets.PRODUCTION_HOST }}
+        username: ${{ secrets.PRODUCTION_USER }}
+        key: ${{ secrets.PRODUCTION_SSH_KEY }}
+        script: |
+          # Disable maintenance mode
+          echo "✅ Disabling maintenance mode..."
+          ./maintenance_mode.sh disable
+          
+    - name: 🔄 Rollback on failure
+      uses: appleboy/ssh-action@v1.0.0
+      if: failure()
+      with:
+        host: ${{ secrets.PRODUCTION_HOST }}
+        username: ${{ secrets.PRODUCTION_USER }}
+        key: ${{ secrets.PRODUCTION_SSH_KEY }}
+        script: |
+          # Rollback to previous version
+          echo "🔄 Rolling back deployment..."
+          ./rollback.sh
+          
+          # Restore from backup if needed
+          ./emergency_restore.sh
+          
+          # Disable maintenance mode
+          ./maintenance_mode.sh disable
+          
+    - name: 📊 Post-deployment monitoring
+      if: success()
+      run: |
+        # Send success notification
+        curl -X POST -H 'Content-type: application/json' \
+          --data '{"text":"🎉 Production deployment completed successfully!\nImage: ${{ needs.build.outputs.image }}\nCommit: ${{ github.sha }}\nTime: $(date)"}' \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+          
+        # Trigger monitoring alerts
+        curl -X POST \
+          -H "Authorization: Bearer ${{ secrets.GRAFANA_API_KEY }}" \
+          -H "Content-Type: application/json" \
+          -d '{"text":"Production deployment completed","tags":["deployment","production"]}' \
+          ${{ secrets.GRAFANA_ANNOTATION_URL }}
+
+  # 🔍 Post-Deployment Validation
+  validate:
+    name: 🔍 Validate Deployment
+    runs-on: ubuntu-24.04
+    needs: [deploy-production]
+    if: always() && needs.deploy-production.result == 'success'
+    
+    steps:
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
+      
+    - name: 🧪 End-to-end tests
+      run: |
+        # Run comprehensive E2E tests against production
+        npm install -g playwright
+        
+        # Test critical user journeys
+        npx playwright test --config=playwright.prod.config.js
+        
+    - name: 📊 Performance validation
+      run: |
+        # Load test production environment
+        docker run --rm \
+          grafana/k6:latest run - <<'EOF'
+        import http from 'k6/http';
+        export let options = {
+          stages: [
+            { duration: '2m', target: 100 },
+            { duration: '5m', target: 100 },
+            { duration: '2m', target: 0 },
+          ],
+        };
+        export default function() {
+          let response = http.get('${{ secrets.PRODUCTION_URL }}/health');
+          check(response, {
+            'status is 200': (r) => r.status === 200,
+            'response time < 500ms': (r) => r.timings.duration < 500,
+          });
+        }
+        EOF
+        
+    - name: 🔒 Security validation
+      run: |
+        # Run security checks against production
+        docker run --rm \
+          owasp/zap2docker-stable zap-baseline.py \
+          -t ${{ secrets.PRODUCTION_URL }}
+          
+    - name: 📈 Update deployment dashboard
+      run: |
+        # Update deployment metrics in monitoring system
+        curl -X POST \
+          -H "Content-Type: application/json" \
+          -d '{
+            "metric": "deployment.success",
+            "value": 1,
+            "timestamp": '$(date +%s)',
+            "tags": {
+              "environment": "production",
+              "version": "${{ github.sha }}",
+              "pipeline": "${{ github.run_id }}"
+            }
+          }' \
+          ${{ secrets.METRICS_ENDPOINT }}
+
+# 🚨 Failure Notification
+  notify-failure:
+    name: 🚨 Notify Failure
+    runs-on: ubuntu-24.04
+    needs: [test, build, deploy-staging, deploy-production]
+    if: always() && contains(needs.*.result, 'failure')
+    
+    steps:
+    - name: 📧 Send failure notification
+      run: |
+        # Determine which stage failed
+        FAILED_STAGE=""
+        if [[ "${{ needs.test.result }}" == "failure" ]]; then
+          FAILED_STAGE="Testing"
+        elif [[ "${{ needs.build.result }}" == "failure" ]]; then
+          FAILED_STAGE="Build"
+        elif [[ "${{ needs.deploy-staging.result }}" == "failure" ]]; then
+          FAILED_STAGE="Staging Deployment"
+        elif [[ "${{ needs.deploy-production.result }}" == "failure" ]]; then
+          FAILED_STAGE="Production Deployment"
+        fi
+        
+        # Send detailed failure notification
+        curl -X POST -H 'Content-type: application/json' \
+          --data '{
+            "text": "🚨 Supabase Deployment Failed!",
+            "attachments": [
+              {
+                "color": "danger",
+                "fields": [
+                  {
+                    "title": "Failed Stage",
+                    "value": "'$FAILED_STAGE'",
+                    "short": true
+                  },
+                  {
+                    "title": "Branch",
+                    "value": "${{ github.ref_name }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Commit", 
+                    "value": "${{ github.sha }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Workflow",
+                    "value": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                    "short": false
+                  }
+                ]
+              }
+            ]
+          }' \
+          ${{ secrets.SLACK_WEBHOOK_URL }}
+          
+        # Send PagerDuty alert for production failures
+        if [[ "$FAILED_STAGE" == *"Production"* ]]; then
+          curl -X POST \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Token token=${{ secrets.PAGERDUTY_TOKEN }}" \
+            -d '{
+              "incident": {
+                "type": "incident",
+                "title": "Supabase Production Deployment Failed",
+                "service": {
+                  "id": "${{ secrets.PAGERDUTY_SERVICE_ID }}",
+                  "type": "service_reference"
+                },
+                "urgency": "high",
+                "body": {
+                  "type": "incident_body",
+                  "details": "Production deployment failed at stage: '$FAILED_STAGE'"
+                }
+              }
+            }' \
+            https://api.pagerduty.com/incidents

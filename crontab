@@ -1,0 +1,62 @@
+# Supabase Self-Hosting Cron Jobs
+# Enhanced scheduling with better error handling and notifications
+# 
+# Installation:
+# 1. Copy your current configuration: cp config.env.example config.env
+# 2. Edit the paths below to match your setup
+# 3. Install: sudo crontab -e (then paste the contents below)
+#
+# Log files will be created in /var/log/supabase/
+
+# =============================================================================
+# BACKUP JOBS
+# =============================================================================
+
+# Daily backup at 2:00 AM with error handling
+0 2 * * * /bin/bash /opt/supabase-scripts/backup_supabase.sh >/dev/null 2>&1
+
+# Weekly full backup on Sunday at 1:00 AM (alternative schedule)
+# 0 1 * * 0 /bin/bash /opt/supabase-scripts/backup_supabase.sh >/dev/null 2>&1
+
+# =============================================================================
+# UPDATE JOBS
+# =============================================================================
+
+# Weekly update on Sunday at 3:00 AM
+0 3 * * 0 /bin/bash /opt/supabase-scripts/update_supabase.sh >/dev/null 2>&1
+
+# Monthly update (alternative) - First Sunday of each month at 3:00 AM
+# 0 3 1-7 * 0 /bin/bash /opt/supabase-scripts/update_supabase.sh >/dev/null 2>&1
+
+# =============================================================================
+# MAINTENANCE JOBS
+# =============================================================================
+
+# Daily log rotation at 11:55 PM
+55 23 * * * /usr/sbin/logrotate -f /etc/logrotate.d/supabase >/dev/null 2>&1
+
+# Weekly Docker cleanup on Saturday at 4:00 AM
+0 4 * * 6 /usr/bin/docker system prune -f >/dev/null 2>&1
+
+# Monthly disk usage check - First day of month at 6:00 AM
+0 6 1 * * /bin/bash -c 'df -h /var/backups/supabase | tail -1 | awk "{print \"Backup disk usage: \" \$5}" >> /var/log/supabase/maintenance.log'
+
+# =============================================================================
+# HEALTH MONITORING
+# =============================================================================
+
+# Health check every hour during business hours (9 AM to 5 PM, Mon-Fri)
+0 9-17 * * 1-5 /bin/bash -c 'curl -sf http://localhost:8000/health >/dev/null || echo "$(date): Health check failed" >> /var/log/supabase/health.log'
+
+# =============================================================================
+# EXAMPLE ALTERNATIVE SCHEDULES
+# =============================================================================
+
+# More frequent backups (every 6 hours)
+# 0 */6 * * * /bin/bash /opt/supabase-scripts/backup_supabase.sh >/dev/null 2>&1
+
+# Development environment (daily updates)
+# 0 2 * * * /bin/bash /opt/supabase-scripts/update_supabase.sh >/dev/null 2>&1
+
+# Production environment (manual updates only - comment out automatic updates)
+# # 0 3 * * 0 /bin/bash /opt/supabase-scripts/update_supabase.sh >/dev/null 2>&1
