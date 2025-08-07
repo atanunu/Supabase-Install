@@ -254,7 +254,23 @@ docker compose ps
 docker compose logs
 ```
 
-## 🔒 Security Considerations
+## � Documentation
+
+Complete documentation is available in the [`documentation/`](./documentation/) folder:
+
+| Guide | Description |
+|-------|-------------|
+| [**SSH Deployment Guide**](./documentation/DEPLOYMENT_GUIDE.md) | Complete production deployment via SSH |
+| [**Production Guide**](./documentation/PRODUCTION_GUIDE.md) | Enterprise production configuration |
+| [**Performance Guide**](./documentation/PERFORMANCE_README.md) | Performance optimization and tuning |
+| [**Operations Guide**](./documentation/OPERATIONS_COMPLETE.md) | Operational capabilities and procedures |
+| [**Cloud Setup Guide**](./documentation/CLOUD_SETUP_GUIDE.md) | Cloud provider deployment |
+| [**Web Deployment Guide**](./documentation/WEB_DEPLOYMENT_GUIDE.md) | Web interface deployment |
+| [**Best Practices**](./documentation/RECOMMENDATIONS.md) | Security and operational recommendations |
+
+👉 **[Browse All Documentation](./documentation/README.md)**
+
+## �🔒 Security Considerations
 
 - Use strong passwords for all services
 - Enable firewall and limit exposed ports
@@ -269,3 +285,4 @@ For issues:
 2. Verify Docker container status
 3. Check Supabase documentation
 4. Review this README for common solutions
+5. **Consult the [comprehensive documentation](./documentation/README.md)**
