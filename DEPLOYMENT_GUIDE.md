@@ -1,13 +1,262 @@
-# 📖 Enterprise Supabase Deployment Guide
+# ============================================================================
+# DEPLOYMENT GUIDE - SUPABASE ENTERPRISE VIA SSH
+# Complete guide for production deployment to remote servers
+# ============================================================================
 
-## 🎯 **Complete Implementation Status**
+## Overview
 
-Your enterprise-grade Supabase deployment is now **100% complete** with all major components implemented and automated:
+This guide provides step-by-step instructions for deploying Supabase Enterprise to a production server via SSH. The deployment process includes server preparation, environment configuration, secure file transfer, and service startup.
 
-### ✅ **Completed Components (100%)**
+## Prerequisites
 
-| Component | Status | Implementation Details |
-|-----------|--------|------------------------|
+### Local Environment
+- [ ] Git repository with all Supabase files
+- [ ] SSH access to production server
+- [ ] SSH key pair configured (recommended)
+- [ ] Docker and Docker Compose knowledge
+
+### Production Server Requirements
+- [ ] Ubuntu 20.04+ / CentOS 8+ / RHEL 8+ / Debian 11+
+- [ ] Minimum 4GB RAM, 20GB disk space
+- [ ] Root or sudo access
+- [ ] Internet connectivity
+- [ ] Open ports: 22 (SSH), 80 (HTTP), 443 (HTTPS)
+
+### Domain Setup (Optional but Recommended)
+- [ ] Domain name pointing to server IP
+- [ ] DNS A record configured
+- [ ] Email address for SSL certificate
+
+## Step 1: Prepare Production Server
+
+### 1.1 Run Server Preparation Script
+
+First, prepare your server with required dependencies:
+
+```bash
+# Basic server preparation
+sudo ./prepare_server.sh
+
+# Full setup with SSL certificate
+sudo ./prepare_server.sh --setup-ssl --domain yourdomain.com --email admin@yourdomain.com
+
+# Custom configuration
+sudo ./prepare_server.sh --no-firewall --domain yourdomain.com --email admin@yourdomain.com
+```
+
+### 1.2 Manual Server Preparation (Alternative)
+
+If you prefer manual setup:
+
+```bash
+# Update system
+sudo apt update && sudo apt upgrade -y
+
+# Install Docker
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+
+# Install Docker Compose
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Create directories
+sudo mkdir -p /opt/supabase
+sudo mkdir -p /var/lib/supabase/{db_data,storage_data,redis_data,prometheus_data,grafana_data}
+
+# Configure firewall
+sudo ufw allow ssh
+sudo ufw allow 80/tcp
+sudo ufw allow 443/tcp
+sudo ufw --force enable
+```
+
+## Step 2: Configure Environment Variables
+
+### 2.1 Update Production Environment
+
+Edit `.env.production` with your production values:
+
+```bash
+# Copy template and customize
+cp .env.production .env.production.local
+
+# Edit with your values
+nano .env.production.local
+```
+
+### 2.2 Critical Configuration Items
+
+Update these essential variables:
+
+```bash
+# Domain and URLs
+SITE_URL=https://yourdomain.com
+API_EXTERNAL_URL=https://yourdomain.com
+
+# Database Security
+POSTGRES_PASSWORD=your_strong_password_here
+JWT_SECRET=your_jwt_secret_here
+ANON_KEY=your_generated_anon_key
+SERVICE_ROLE_KEY=your_generated_service_role_key
+
+# Email Configuration
+SMTP_HOST=smtp.yourdomain.com
+SMTP_USER=noreply@yourdomain.com
+SMTP_PASS=your_smtp_password
+
+# Monitoring
+GRAFANA_ADMIN_PASSWORD=your_grafana_password
+```
+
+### 2.3 Generate Required Keys
+
+Generate secure keys for your deployment:
+
+```bash
+# Generate JWT secret (32+ characters)
+openssl rand -base64 32
+
+# Generate PostgreSQL password
+openssl rand -base64 32
+
+# Generate service keys using Supabase CLI or online generator
+```
+
+## Step 3: Deploy via SSH
+
+### 3.1 Basic SSH Deployment
+
+Deploy to your server using the SSH deployment script:
+
+```bash
+# Basic deployment
+./deploy_ssh.sh --server your-server.com
+
+# With custom SSH key
+./deploy_ssh.sh --server your-server.com --key ~/.ssh/production.pem --user ubuntu
+
+# Full options
+./deploy_ssh.sh \
+  --server your-server.com \
+  --user ubuntu \
+  --port 22 \
+  --key ~/.ssh/production.pem \
+  --path /opt/supabase \
+  --env production
+```
+
+### 3.2 Advanced Deployment Options
+
+```bash
+# Deployment without backup
+./deploy_ssh.sh --server your-server.com --no-backup
+
+# Deployment without validation
+./deploy_ssh.sh --server your-server.com --no-validate
+
+# Deployment without auto-start
+./deploy_ssh.sh --server your-server.com --no-start
+```
+
+### 3.3 Manual SSH Deployment
+
+If you prefer manual deployment:
+
+```bash
+# 1. Transfer files
+scp -r ./* user@your-server.com:/opt/supabase/
+
+# 2. Connect to server
+ssh user@your-server.com
+
+# 3. Navigate to deployment directory
+cd /opt/supabase
+
+# 4. Set permissions
+chmod +x *.sh
+chmod 600 .env.production
+
+# 5. Start services
+docker-compose -f docker-compose.yml -f docker-compose.production.yml up -d
+```
+
+## Step 4: Post-Deployment Configuration
+
+### 4.1 Verify Deployment
+
+Run the validation script to ensure everything is working:
+
+```bash
+# On the server
+cd /opt/supabase
+./validate_deployment.sh --production
+```
+
+### 4.2 Check Service Status
+
+Verify all services are running:
+
+```bash
+# Check Docker containers
+docker-compose ps
+
+# Check service health
+docker-compose logs --tail=50
+
+# Check individual service
+docker-compose logs -f kong
+```
+
+### 4.3 Configure SSL (If not done automatically)
+
+Set up SSL certificates manually if needed:
+
+```bash
+# Install Certbot
+sudo apt install certbot python3-certbot-nginx
+
+# Obtain certificate
+sudo certbot certonly --standalone -d yourdomain.com
+
+# Copy certificates
+sudo cp /etc/letsencrypt/live/yourdomain.com/fullchain.pem /opt/supabase/ssl/
+sudo cp /etc/letsencrypt/live/yourdomain.com/privkey.pem /opt/supabase/ssl/
+```
+
+## Step 5: Access Your Deployment
+
+### 5.1 Service URLs
+
+Once deployed, access your services at:
+
+- **Main API**: `https://yourdomain.com/rest/v1/`
+- **Auth**: `https://yourdomain.com/auth/v1/`
+- **Storage**: `https://yourdomain.com/storage/v1/`
+- **Realtime**: `wss://yourdomain.com/realtime/v1/`
+- **Management Interface**: `https://yourdomain.com/`
+
+### 5.2 Monitoring Access
+
+- **Grafana**: `https://yourdomain.com:3001` (admin / your_grafana_password)
+- **Prometheus**: `https://yourdomain.com:9090` (localhost only)
+- **Health Check**: `https://yourdomain.com/health`
+
+### 5.3 Database Access
+
+Connect to PostgreSQL:
+
+```bash
+# From server
+psql -h localhost -p 5432 -U postgres -d postgres
+
+# From remote (if configured)
+psql -h yourdomain.com -p 5432 -U postgres -d postgres
+```
+
+---
+
+**Note**: This deployment guide provides comprehensive SSH-based deployment capabilities for production environments.
 | **🔒 Security** | ✅ 100% | SSL/TLS automation, WAF, rate limiting, MFA, security scanning |
 | **⚡ Performance** | ✅ 100% | External PostgreSQL, CDN, connection pooling, query optimization |
 | **📊 Monitoring** | ✅ 100% | Prometheus, Grafana, Loki, 30-day retention, custom dashboards |

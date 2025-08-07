@@ -1,0 +1,434 @@
+# Production Docker Compose Override
+# This file contains production-specific configurations and optimizations
+
+version: '3.8'
+
+services:
+  # ============================================================================
+  # KONG API GATEWAY - Production Configuration
+  # ============================================================================
+  kong:
+    image: kong:3.4-alpine
+    restart: unless-stopped
+    environment:
+      - KONG_DATABASE=off
+      - KONG_DECLARATIVE_CONFIG=/var/lib/kong/kong.yml
+      - KONG_DNS_ORDER=LAST,A,CNAME
+      - KONG_PLUGINS=request-size-limiting,response-ratelimiting,rate-limiting,cors,key-auth,acl,basic-auth,request-transformer,response-transformer,request-termination
+      - KONG_NGINX_WORKER_PROCESSES=auto
+      - KONG_NGINX_DAEMON=off
+      - KONG_PROXY_LISTEN=0.0.0.0:8000
+      - KONG_PROXY_LISTEN_SSL=0.0.0.0:8443 ssl
+      - KONG_ADMIN_LISTEN=127.0.0.1:8001
+      - KONG_ADMIN_GUI_URL=http://localhost:8002
+      - KONG_REAL_IP_HEADER=X-Forwarded-For
+      - KONG_REAL_IP_RECURSIVE=on
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    volumes:
+      - ./kong/kong.yml:/var/lib/kong/kong.yml:ro
+      - ./ssl:/etc/ssl/kong:ro
+    healthcheck:
+      test: [ "CMD", "kong", "health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # ============================================================================
+  # SUPABASE AUTH - Production Configuration
+  # ============================================================================
+  auth:
+    image: supabase/gotrue:v2.99.0
+    restart: unless-stopped
+    environment:
+      - GOTRUE_API_HOST=0.0.0.0
+      - GOTRUE_API_PORT=9999
+      - GOTRUE_DB_DRIVER=postgres
+      - GOTRUE_SITE_URL=${SITE_URL}
+      - GOTRUE_URI_ALLOW_LIST=${ADDITIONAL_REDIRECT_URLS}
+      - GOTRUE_DISABLE_SIGNUP=${DISABLE_SIGNUP}
+      - GOTRUE_JWT_ADMIN_ROLES=service_role
+      - GOTRUE_JWT_AUD=authenticated
+      - GOTRUE_JWT_DEFAULT_GROUP_NAME=authenticated
+      - GOTRUE_JWT_EXP=${JWT_EXPIRY}
+      - GOTRUE_JWT_SECRET=${JWT_SECRET}
+      - GOTRUE_DB_DATABASE_URL=postgresql://supabase_auth_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      - GOTRUE_SMTP_HOST=${SMTP_HOST}
+      - GOTRUE_SMTP_PORT=${SMTP_PORT}
+      - GOTRUE_SMTP_USER=${SMTP_USER}
+      - GOTRUE_SMTP_PASS=${SMTP_PASS}
+      - GOTRUE_SMTP_ADMIN_EMAIL=${SMTP_ADMIN_EMAIL}
+      - GOTRUE_SMTP_SENDER_NAME=${SMTP_SENDER_NAME}
+      - GOTRUE_RATE_LIMIT_HEADER=X-Forwarded-For
+      - GOTRUE_RATE_LIMIT_EMAIL_SENT=60
+      - GOTRUE_RATE_LIMIT_SMS_SENT=60
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: [ "CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:9999/health" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # SUPABASE REST API - Production Configuration
+  # ============================================================================
+  rest:
+    image: postgrest/postgrest:v11.2.0
+    restart: unless-stopped
+    environment:
+      - PGRST_DB_URI=postgresql://authenticator:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      - PGRST_DB_SCHEMAS=public,storage,graphql_public
+      - PGRST_DB_ANON_ROLE=anon
+      - PGRST_JWT_SECRET=${JWT_SECRET}
+      - PGRST_DB_USE_LEGACY_GUCS=false
+      - PGRST_APP_SETTINGS_JWT_SECRET=${JWT_SECRET}
+      - PGRST_APP_SETTINGS_JWT_EXP=${JWT_EXPIRY}
+      - PGRST_DB_POOL=${PGRST_DB_POOL}
+      - PGRST_DB_POOL_TIMEOUT=${PGRST_DB_POOL_TIMEOUT}
+      - PGRST_SERVER_CORS_ALLOWED_ORIGINS=*
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:3000/ || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # SUPABASE REALTIME - Production Configuration
+  # ============================================================================
+  realtime:
+    image: supabase/realtime:v2.25.35
+    restart: unless-stopped
+    environment:
+      - PORT=4000
+      - DB_HOST=${POSTGRES_HOST}
+      - DB_PORT=${POSTGRES_PORT}
+      - DB_USER=supabase_admin
+      - DB_PASSWORD=${POSTGRES_PASSWORD}
+      - DB_NAME=${POSTGRES_DB}
+      - DB_AFTER_CONNECT_QUERY=SET search_path TO _realtime
+      - DB_ENC_KEY=supabaserealtime
+      - API_JWT_SECRET=${JWT_SECRET}
+      - FLY_ALLOC_ID=fly123
+      - FLY_APP_NAME=realtime
+      - SECRET_KEY_BASE=UpNVntn3cDxHJpq99YMc1T1AQgQpc8kfYTuRgBiYa15BLrx8etQoXz3gZv1/u2oq
+      - ERL_AFLAGS=-proto_dist inet_tcp
+      - ENABLE_TAILSCALE=false
+      - DNS_NODES=''
+      - MAX_CONNECTIONS=${REALTIME_MAX_CONNECTIONS}
+      - MAX_CHANNELS_PER_CLIENT=${REALTIME_MAX_CHANNELS_PER_CLIENT}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:4000/api/health || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # SUPABASE STORAGE - Production Configuration
+  # ============================================================================
+  storage:
+    image: supabase/storage-api:v0.43.11
+    restart: unless-stopped
+    environment:
+      - ANON_KEY=${ANON_KEY}
+      - SERVICE_KEY=${SERVICE_ROLE_KEY}
+      - POSTGREST_URL=http://rest:3000
+      - PGRST_JWT_SECRET=${JWT_SECRET}
+      - DATABASE_URL=postgresql://supabase_storage_admin:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
+      - FILE_SIZE_LIMIT=${FILE_SIZE_LIMIT}
+      - STORAGE_BACKEND=${STORAGE_BACKEND}
+      - FILE_STORAGE_BACKEND_PATH=/var/lib/storage
+      - TENANT_ID=stub
+      - REGION=us-east-1
+      - GLOBAL_S3_BUCKET=${STORAGE_S3_BUCKET}
+      - AWS_DEFAULT_REGION=${STORAGE_S3_REGION}
+      - S3_ENDPOINT=${STORAGE_S3_ENDPOINT}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    volumes:
+      - storage_data:/var/lib/storage
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:5000/status || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # SUPABASE META - Production Configuration
+  # ============================================================================
+  meta:
+    image: supabase/postgres-meta:v0.75.0
+    restart: unless-stopped
+    environment:
+      - PG_META_PORT=8080
+      - PG_META_DB_HOST=${POSTGRES_HOST}
+      - PG_META_DB_PORT=${POSTGRES_PORT}
+      - PG_META_DB_NAME=${POSTGRES_DB}
+      - PG_META_DB_USER=supabase_admin
+      - PG_META_DB_PASSWORD=${POSTGRES_PASSWORD}
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:8080/health || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # SUPABASE FUNCTIONS - Production Configuration
+  # ============================================================================
+  functions:
+    image: supabase/edge-runtime:v1.8.2
+    restart: unless-stopped
+    environment:
+      - JWT_SECRET=${JWT_SECRET}
+      - SUPABASE_URL=${API_EXTERNAL_URL}
+      - SUPABASE_ANON_KEY=${ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY=${SERVICE_ROLE_KEY}
+      - VERIFY_JWT=${FUNCTIONS_VERIFY_JWT}
+      - HTTP_TIMEOUT=${FUNCTIONS_HTTP_TIMEOUT}
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    volumes:
+      - ./functions:/home/deno/functions:ro
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:9000/health || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # POSTGRESQL DATABASE - Production Configuration
+  # ============================================================================
+  db:
+    image: supabase/postgres:15.1.0.117
+    restart: unless-stopped
+    environment:
+      - POSTGRES_HOST=/var/run/postgresql
+      - PGPORT=${POSTGRES_PORT}
+      - POSTGRES_PORT=${POSTGRES_PORT}
+      - PGDATABASE=${POSTGRES_DB}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - PGUSER=${POSTGRES_USER}
+      - POSTGRES_USER=${POSTGRES_USER}
+      - PGPASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_INITDB_ARGS=--auth-local=trust --auth-host=md5
+      - POSTGRES_HOST_AUTH_METHOD=md5
+      - POSTGRES_MAX_CONNECTIONS=${POSTGRES_MAX_CONNECTIONS}
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    volumes:
+      - db_data:/var/lib/postgresql/data
+      - ./database/init:/docker-entrypoint-initdb.d:ro
+      - ./database/config/postgresql.conf:/etc/postgresql/postgresql.conf:ro
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT}:5432"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}" ]
+      interval: 30s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ============================================================================
+  # REDIS CACHE - Production Configuration
+  # ============================================================================
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --requirepass ${REDIS_PASSWORD} --maxmemory 256mb --maxmemory-policy allkeys-lru
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD-SHELL", "redis-cli ping || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ============================================================================
+  # PROMETHEUS MONITORING - Production Configuration
+  # ============================================================================
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    restart: unless-stopped
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=${PROMETHEUS_RETENTION}'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+        reservations:
+          memory: 512M
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:${PROMETHEUS_PORT}:9090"
+    healthcheck:
+      test: [ "CMD-SHELL", "wget --quiet --tries=1 --spider http://localhost:9090/-/healthy || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # GRAFANA DASHBOARDS - Production Configuration
+  # ============================================================================
+  grafana:
+    image: grafana/grafana:10.0.0
+    restart: unless-stopped
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GRAFANA_ADMIN_USER}
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel
+      - GF_SERVER_ROOT_URL=https://${SITE_URL}:3000
+      - GF_SECURITY_ALLOW_EMBEDDING=true
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+        reservations:
+          memory: 256M
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT}:3000"
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost:3000/api/health || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # ============================================================================
+  # REVERSE PROXY - Production Configuration
+  # ============================================================================
+  reverse-proxy:
+    image: nginx:1.25-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./ssl:/etc/ssl/nginx:ro
+      - ./static:/var/www/html:ro
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 128M
+    healthcheck:
+      test: [ "CMD-SHELL", "curl -f http://localhost/health || exit 1" ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+# ============================================================================
+# VOLUMES - Persistent Data Storage
+# ============================================================================
+volumes:
+  db_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/supabase/db_data
+  storage_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/supabase/storage_data
+  redis_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/supabase/redis_data
+  prometheus_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/supabase/prometheus_data
+  grafana_data:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /var/lib/supabase/grafana_data
+
+# ============================================================================
+# NETWORKS - Service Communication
+# ============================================================================
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.16.0.0/24
